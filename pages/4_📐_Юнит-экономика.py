@@ -1,37 +1,22 @@
-"""Юнит-экономика по SKU — Ozon Электроника (standalone)."""
+"""Юнит-экономика по SKU — Ozon Электроника."""
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import requests
 import calendar
 from datetime import date
+
+# fetch_transactions существует в исходной версии ozon_api.py (c самого первого коммита)
+from src.ozon_api import fetch_transactions
 
 st.title("📐 Юнит-экономика по SKU")
 
 MONTHS_RU = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
              "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
-
-def _headers():
-    try:
-        cid = st.secrets["ozon"]["client_id"]
-        key = st.secrets["ozon"]["api_key"]
-    except Exception:
-        import os
-        cid = os.getenv("OZON_CLIENT_ID", "")
-        key = os.getenv("OZON_API_KEY", "")
-    return {"Client-Id": str(cid), "Api-Key": key, "Content-Type": "application/json"}
-
+# ── Classifier ────────────────────────────────────────────────────────────────
 
 def _classify(op_name: str, svc_name: str) -> str:
     c = (op_name + " " + svc_name).lower()
-    if "acquiring" in svc_name.lower() or "эквайринг" in c:
-        return "эквайринг"
-    if any(x in c for x in ("storage", "хранение", "склад", "размещение")):
-        return "хранение"
-    if any(x in c for x in ("return", "возврат", "невыкуп", "отмен")):
-        return "возвраты"
     if any(x in c for x in ("logistic", "доставка", "кросс")):
         return "логистика"
     if any(x in c for x in ("advert", "реклам", "promo")):
@@ -39,30 +24,9 @@ def _classify(op_name: str, svc_name: str) -> str:
     return "прочее"
 
 
-def _fetch(date_from: date, date_to: date) -> list:
-    ops, page = [], 1
-    while True:
-        r = requests.post(
-            "https://api-seller.ozon.ru/v3/finance/transaction/list",
-            json={"filter": {"date": {"from": f"{date_from}T00:00:00Z",
-                                      "to":   f"{date_to}T23:59:59Z"},
-                             "transaction_type": "all"},
-                  "page": page, "page_size": 100},
-            headers=_headers(), timeout=30,
-        )
-        r.raise_for_status()
-        result = r.json().get("result", {})
-        batch  = result.get("operations", [])
-        ops.extend(batch)
-        if page >= result.get("page_count", 1) or not batch:
-            break
-        page += 1
-    return ops
-
-
 def build_unit_economics(date_from: date, date_to: date) -> pd.DataFrame:
     rows = []
-    for op in _fetch(date_from, date_to):
+    for op in fetch_transactions(date_from, date_to):
         rev = op.get("accruals_for_sale", 0)
         if rev == 0:
             continue
