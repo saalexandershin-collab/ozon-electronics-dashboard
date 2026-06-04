@@ -118,6 +118,69 @@ def get_products(limit: int = 200) -> pd.DataFrame:
     return pd.DataFrame(items) if items else pd.DataFrame()
 
 
+def get_unit_economics(date_from: date, date_to: date) -> pd.DataFrame:
+    """Per-SKU unit economics: qty, avg price, revenue, commission, logistics, ads+other, payout."""
+    ops = fetch_transactions(date_from, date_to)
+    rows = []
+
+    for op in ops:
+        revenue = op.get("accruals_for_sale", 0)
+        if revenue == 0:
+            continue
+        commission = op.get("sale_commission", 0)
+        items = op.get("items", [])
+        if not items:
+            continue
+
+        op_name = op.get("operation_type_name", "")
+        svc_logistics = svc_ads = svc_other = 0.0
+        for svc in op.get("services", []):
+            cat = _classify_service(op_name, svc.get("name", ""))
+            price = svc.get("price", 0)
+            if cat == "логистика":
+                svc_logistics += price
+            elif cat == "реклама":
+                svc_ads += price
+            else:
+                svc_other += price
+
+        total_qty = sum(item.get("quantity", 1) or 1 for item in items) or len(items)
+
+        for item in items:
+            qty = item.get("quantity", 1) or 1
+            w = qty / total_qty
+            item_rev = revenue    * w
+            item_com = commission * w
+            item_log = svc_logistics * w
+            item_ads = (svc_ads + svc_other) * w
+            rows.append({
+                "sku":          item.get("sku"),
+                "артикул":      item.get("offer_id", ""),
+                "товар":        item.get("name", ""),
+                "кол_во":       qty,
+                "выручка":      item_rev,
+                "комиссия":     item_com,
+                "логистика":    item_log,
+                "реклама_проч": item_ads,
+                "выплата":      item_rev + item_com + item_log + item_ads,
+            })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    agg = df.groupby(["sku", "артикул", "товар"]).agg(
+        кол_во       =("кол_во",       "sum"),
+        выручка      =("выручка",      "sum"),
+        комиссия     =("комиссия",     "sum"),
+        логистика    =("логистика",    "sum"),
+        реклама_проч =("реклама_проч", "sum"),
+        выплата      =("выплата",      "sum"),
+    ).reset_index()
+    agg["ср_цена"] = (agg["выручка"] / agg["кол_во"].replace(0, 1)).round(0)
+    return agg.sort_values("выручка", ascending=False).reset_index(drop=True)
+
+
 def get_top_products_by_revenue(date_from: date, date_to: date) -> pd.DataFrame:
     """Get revenue breakdown by product from transactions."""
     ops = fetch_transactions(date_from, date_to)
