@@ -2,11 +2,17 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import io
 import calendar
 from datetime import date
-
-# fetch_transactions существует в исходной версии ozon_api.py (c самого первого коммита)
 from src.ozon_api import fetch_transactions
+
+
+def _to_excel(dataframe: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        dataframe.to_excel(w, index=False)
+    return buf.getvalue()
 
 st.title("📐 Юнит-экономика по SKU")
 
@@ -161,6 +167,17 @@ display.columns = [
     "Выручка", "Комиссия", "Логистика", "Реклама/прочее", "Выплата",
 ]
 st.dataframe(display, use_container_width=True, hide_index=True)
+
+excel_df = df[["sku", "артикул", "товар", "кол_во", "ср_цена",
+               "выручка", "комиссия", "логистика", "реклама_проч", "выплата"]].copy()
+excel_df.columns = ["SKU", "Артикул", "Товар", "Кол-во", "Ср. цена, ₽",
+                    "Выручка, ₽", "Комиссия, ₽", "Логистика, ₽", "Реклама/прочее, ₽", "Выплата, ₽"]
+st.download_button(
+    "📥 Скачать в Excel",
+    data=_to_excel(excel_df),
+    file_name=f"unit_economics_{year}_{MONTHS_RU[m_from-1]}–{MONTHS_RU[m_to-1]}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 
 # ── Структура на 1 шт. (топ SKU) ─────────────────────────────────────────────
 st.markdown("### 💧 Структура выплаты на 1 шт. (лучший SKU по выручке)")

@@ -3,8 +3,16 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
+import io
 from datetime import date
 from src.ozon_api import get_pnl_monthly
+
+
+def _to_excel(dataframe: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        dataframe.to_excel(w, index=False)
+    return buf.getvalue()
 
 st.title("📊 P&L по месяцам — Ozon Электроника")
 
@@ -109,6 +117,14 @@ for c in num_cols:
     tbl_display[c] = tbl_display[c].apply(fmt)
 
 st.dataframe(tbl_display, use_container_width=True, hide_index=True)
+
+months_label = f"{MONTHS_RU[min(months_sorted)-1]}–{MONTHS_RU[max(months_sorted)-1]}" if len(months_sorted) > 1 else MONTHS_RU[months_sorted[0]-1]
+st.download_button(
+    "📥 Скачать P&L в Excel",
+    data=_to_excel(tbl),
+    file_name=f"pnl_{year}_{months_label}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
 
 # ── График: выручка vs нетто ──────────────────────────────────────────────────
 st.markdown("### 📈 Динамика выручки и выплат")

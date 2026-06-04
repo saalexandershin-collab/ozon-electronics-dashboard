@@ -1,9 +1,17 @@
 """Транзакции — Ozon Электроника."""
 import streamlit as st
 import pandas as pd
+import io
 import calendar
 from datetime import date
 from src.ozon_api import fetch_transactions
+
+
+def _to_excel(dataframe: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        dataframe.to_excel(w, index=False)
+    return buf.getvalue()
 
 st.title("💳 Транзакции Ozon")
 
@@ -75,3 +83,10 @@ show_cols = [c for c in [
 ] if c in df.columns]
 
 st.dataframe(df[show_cols] if show_cols else df, use_container_width=True, hide_index=True)
+
+st.download_button(
+    "📥 Скачать в Excel",
+    data=_to_excel(df[show_cols] if show_cols else df),
+    file_name=f"transactions_{date_from}_{date_to}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
