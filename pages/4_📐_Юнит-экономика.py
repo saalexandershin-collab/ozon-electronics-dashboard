@@ -25,15 +25,18 @@ def _classify(op_name: str, svc_name: str) -> str:
 
 
 def build_unit_economics(date_from: date, date_to: date) -> pd.DataFrame:
-    import requests as _req
-    try:
-        ops = fetch_transactions(date_from, date_to)
-    except _req.exceptions.HTTPError as e:
-        raise RuntimeError(
-            f"Ozon API {e.response.status_code}: {e.response.text[:500]}"
-        ) from e
+    import calendar as _cal
+    # Ozon API ограничение: не более 1 месяца на запрос — итерируем помесячно
+    all_ops = []
+    cur = date_from
+    while cur <= date_to:
+        y, m = cur.year, cur.month
+        month_end = min(date(y, m, _cal.monthrange(y, m)[1]), date_to)
+        all_ops.extend(fetch_transactions(cur, month_end))
+        cur = date(y + (m == 12), (m % 12) + 1, 1)
+
     rows = []
-    for op in ops:
+    for op in all_ops:
         rev = op.get("accruals_for_sale", 0)
         if rev == 0:
             continue
