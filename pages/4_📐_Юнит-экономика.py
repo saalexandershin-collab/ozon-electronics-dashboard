@@ -1,57 +1,112 @@
-"""Юнит-экономика по SKU — Ozon Электроника."""
+"""Юнит-экономика по SKU — Ozon Электроника (standalone)."""
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import date
+import requests
 import calendar
-from src.ozon_api import fetch_transactions, _classify_service
+from datetime import date
+
+st.title("📐 Юнит-экономика по SKU")
+
+MONTHS_RU = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+             "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _headers():
+    try:
+        cid = st.secrets["ozon"]["client_id"]
+        key = st.secrets["ozon"]["api_key"]
+    except Exception:
+        import os
+        cid = os.getenv("OZON_CLIENT_ID", "")
+        key = os.getenv("OZON_API_KEY", "")
+    return {"Client-Id": str(cid), "Api-Key": key, "Content-Type": "application/json"}
 
 
-def get_unit_economics(date_from: date, date_to: date) -> pd.DataFrame:
-    """Per-SKU unit economics: qty, avg price, revenue, commission, logistics, ads+other, payout."""
-    ops = fetch_transactions(date_from, date_to)
+def _classify(op_name: str, svc_name: str) -> str:
+    c = (op_name + " " + svc_name).lower()
+    if "acquiring" in svc_name.lower() or "эквайринг" in c:
+        return "эквайринг"
+    if any(x in c for x in ("storage", "хранение", "склад", "размещение")):
+        return "хранение"
+    if any(x in c for x in ("return", "возврат", "невыкуп", "отмен")):
+        return "возвраты"
+    if any(x in c for x in ("logistic", "доставка", "кросс")):
+        return "логистика"
+    if any(x in c for x in ("advert", "реклам", "promo")):
+        return "реклама"
+    return "прочее"
+
+
+def _fetch(date_from: date, date_to: date) -> list:
+    ops, page = [], 1
+    while True:
+        r = requests.post(
+            "https://api-seller.ozon.ru/v3/finance/transaction/list",
+            json={"filter": {"date": {"from": f"{date_from}T00:00:00Z",
+                                      "to":   f"{date_to}T23:59:59Z"},
+                             "transaction_type": "all"},
+                  "page": page, "page_size": 100},
+            headers=_headers(), timeout=30,
+        )
+        r.raise_for_status()
+        result = r.json().get("result", {})
+        batch  = result.get("operations", [])
+        ops.extend(batch)
+        if page >= result.get("page_count", 1) or not batch:
+            break
+        page += 1
+    return ops
+
+
+def build_unit_economics(date_from: date, date_to: date) -> pd.DataFrame:
     rows = []
-    for op in ops:
-        revenue = op.get("accruals_for_sale", 0)
-        if revenue == 0:
+    for op in _fetch(date_from, date_to):
+        rev = op.get("accruals_for_sale", 0)
+        if rev == 0:
             continue
-        commission = op.get("sale_commission", 0)
+        com   = op.get("sale_commission", 0)
         items = op.get("items", [])
         if not items:
             continue
+
         op_name = op.get("operation_type_name", "")
-        svc_logistics = svc_ads = svc_other = 0.0
+        log = ads = oth = 0.0
         for svc in op.get("services", []):
-            cat = _classify_service(op_name, svc.get("name", ""))
+            cat   = _classify(op_name, svc.get("name", ""))
             price = svc.get("price", 0)
             if cat == "логистика":
-                svc_logistics += price
+                log += price
             elif cat == "реклама":
-                svc_ads += price
+                ads += price
             else:
-                svc_other += price
+                oth += price
+
         total_qty = sum(item.get("quantity", 1) or 1 for item in items) or len(items)
         for item in items:
             qty = item.get("quantity", 1) or 1
-            w = qty / total_qty
-            item_rev = revenue    * w
-            item_com = commission * w
-            item_log = svc_logistics * w
-            item_ads = (svc_ads + svc_other) * w
+            w   = qty / total_qty
+            r_  = rev * w
+            c_  = com * w
+            l_  = log * w
+            a_  = (ads + oth) * w
             rows.append({
                 "sku":          item.get("sku"),
                 "артикул":      item.get("offer_id", ""),
                 "товар":        item.get("name", ""),
                 "кол_во":       qty,
-                "выручка":      item_rev,
-                "комиссия":     item_com,
-                "логистика":    item_log,
-                "реклама_проч": item_ads,
-                "выплата":      item_rev + item_com + item_log + item_ads,
+                "выручка":      r_,
+                "комиссия":     c_,
+                "логистика":    l_,
+                "реклама_проч": a_,
+                "выплата":      r_ + c_ + l_ + a_,
             })
+
     if not rows:
         return pd.DataFrame()
-    df = pd.DataFrame(rows)
+
+    df  = pd.DataFrame(rows)
     agg = df.groupby(["sku", "артикул", "товар"]).agg(
         кол_во       =("кол_во",       "sum"),
         выручка      =("выручка",      "sum"),
@@ -63,11 +118,8 @@ def get_unit_economics(date_from: date, date_to: date) -> pd.DataFrame:
     agg["ср_цена"] = (agg["выручка"] / agg["кол_во"].replace(0, 1)).round(0)
     return agg.sort_values("выручка", ascending=False).reset_index(drop=True)
 
-st.title("📐 Юнит-экономика по SKU")
 
-MONTHS_RU = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
-             "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"]
-
+# ── Фильтры ───────────────────────────────────────────────────────────────────
 col1, col2, col3 = st.columns(3)
 with col1:
     year = st.selectbox("Год", [2026, 2025])
@@ -84,7 +136,7 @@ date_to   = min(date(year, m_to, calendar.monthrange(year, m_to)[1]), date.today
 
 @st.cache_data(ttl=3600, show_spinner="Загружаю юнит-экономику…")
 def load(df: date, dt: date) -> pd.DataFrame:
-    return get_unit_economics(df, dt)
+    return build_unit_economics(df, dt)
 
 
 df = load(date_from, date_to)
@@ -93,16 +145,16 @@ if df.empty:
     st.warning("Нет данных за период.")
     st.stop()
 
-# ── KPI ──────────────────────────────────────────────────────────────────────
+# ── KPI ───────────────────────────────────────────────────────────────────────
 k1, k2, k3, k4 = st.columns(4)
-k1.metric("Уникальных SKU",   f"{df['sku'].nunique():,}")
-k2.metric("Продано штук",     f"{int(df['кол_во'].sum()):,}")
-k3.metric("Выручка итого",    f"{df['выручка'].sum():,.0f} ₽")
-k4.metric("Выплата итого",    f"{df['выплата'].sum():,.0f} ₽")
+k1.metric("Уникальных SKU",  f"{df['sku'].nunique():,}")
+k2.metric("Продано штук",    f"{int(df['кол_во'].sum()):,}")
+k3.metric("Выручка итого",   f"{df['выручка'].sum():,.0f} ₽")
+k4.metric("Выплата итого",   f"{df['выплата'].sum():,.0f} ₽")
 
 st.markdown("---")
 
-# ── Топ-20 по выручке (бар) ───────────────────────────────────────────────
+# ── Топ-20 по выплате ─────────────────────────────────────────────────────────
 top20 = df.head(20).copy()
 top20["товар_short"] = top20["товар"].str[:50]
 
@@ -116,7 +168,7 @@ fig.update_layout(height=600, yaxis={"categoryorder": "total ascending"},
                   coloraxis_showscale=False)
 st.plotly_chart(fig, use_container_width=True)
 
-# ── Таблица ───────────────────────────────────────────────────────────────
+# ── Таблица ───────────────────────────────────────────────────────────────────
 st.markdown("### 📋 Все SKU — юнит-экономика")
 
 display = df[[
@@ -125,10 +177,8 @@ display = df[[
     "выручка", "комиссия", "логистика", "реклама_проч", "выплата",
 ]].copy()
 
-money_cols = ["ср_цена", "выручка", "комиссия", "логистика", "реклама_проч", "выплата"]
-for c in money_cols:
+for c in ["ср_цена", "выручка", "комиссия", "логистика", "реклама_проч", "выплата"]:
     display[c] = display[c].apply(lambda v: f"{v:,.0f} ₽")
-
 display["кол_во"] = display["кол_во"].apply(lambda v: f"{int(v):,}")
 
 display.columns = [
@@ -138,22 +188,19 @@ display.columns = [
 ]
 st.dataframe(display, use_container_width=True, hide_index=True)
 
-# ── Waterfall: структура на единицу (топ-1 SKU) ──────────────────────────
-st.markdown("### 💧 Структура выплаты на 1 шт. (лучший SKU)")
-
+# ── Структура на 1 шт. (топ SKU) ─────────────────────────────────────────────
+st.markdown("### 💧 Структура выплаты на 1 шт. (лучший SKU по выручке)")
 top1 = df.iloc[0]
 qty  = top1["кол_во"] or 1
 unit = {
-    "Выручка":         top1["выручка"]      / qty,
-    "Комиссия":        top1["комиссия"]     / qty,
-    "Логистика":       top1["логистика"]    / qty,
-    "Реклама/прочее":  top1["реклама_проч"] / qty,
-    "Выплата":         top1["выплата"]      / qty,
+    "Выручка":        top1["выручка"]      / qty,
+    "Комиссия":       top1["комиссия"]     / qty,
+    "Логистика":      top1["логистика"]    / qty,
+    "Реклама/прочее": top1["реклама_проч"] / qty,
+    "Выплата":        top1["выплата"]      / qty,
 }
-
-wf = px.bar(
-    x=list(unit.keys()),
-    y=list(unit.values()),
+fig2 = px.bar(
+    x=list(unit.keys()), y=list(unit.values()),
     color=list(unit.keys()),
     color_discrete_map={
         "Выручка":        "#005BFF",
@@ -162,8 +209,8 @@ wf = px.bar(
         "Реклама/прочее": "#A855F7",
         "Выплата":        "#00B341",
     },
-    title=f"{top1['товар'][:60]}…",
+    title=f"{top1['товар'][:70]}",
     labels={"x": "", "y": "₽ / шт."},
 )
-wf.update_layout(showlegend=False, height=350, margin=dict(t=50, b=30))
-st.plotly_chart(wf, use_container_width=True)
+fig2.update_layout(showlegend=False, height=350, margin=dict(t=50, b=30))
+st.plotly_chart(fig2, use_container_width=True)
