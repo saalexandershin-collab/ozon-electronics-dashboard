@@ -25,8 +25,15 @@ def _classify(op_name: str, svc_name: str) -> str:
 
 
 def build_unit_economics(date_from: date, date_to: date) -> pd.DataFrame:
+    import requests as _req
+    try:
+        ops = fetch_transactions(date_from, date_to)
+    except _req.exceptions.HTTPError as e:
+        raise RuntimeError(
+            f"Ozon API {e.response.status_code}: {e.response.text[:500]}"
+        ) from e
     rows = []
-    for op in fetch_transactions(date_from, date_to):
+    for op in ops:
         rev = op.get("accruals_for_sale", 0)
         if rev == 0:
             continue
