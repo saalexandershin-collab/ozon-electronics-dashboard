@@ -1,8 +1,9 @@
 """Транзакции — Ozon Электроника."""
 import streamlit as st
 import pandas as pd
-from datetime import date, timedelta
-from src.ozon_api import get_finance_transactions
+import calendar
+from datetime import date
+from src.ozon_api import fetch_transactions
 
 st.title("💳 Транзакции Ozon")
 
@@ -17,9 +18,34 @@ if date_from > date_to:
     st.stop()
 
 
+def _fetch_range(d_from: date, d_to: date) -> list:
+    """Fetch transactions month-by-month (Ozon limit: 1 month per request)."""
+    all_ops = []
+    cur = d_from
+    while cur <= d_to:
+        y, m = cur.year, cur.month
+        month_end = min(date(y, m, calendar.monthrange(y, m)[1]), d_to)
+        all_ops.extend(fetch_transactions(cur, month_end))
+        cur = date(y + (m == 12), (m % 12) + 1, 1)
+    return all_ops
+
+
 @st.cache_data(ttl=1800, show_spinner="Загружаю транзакции…")
 def load(df: date, dt: date) -> pd.DataFrame:
-    return get_finance_transactions(df, dt)
+    ops = _fetch_range(df, dt)
+    if not ops:
+        return pd.DataFrame()
+    rows = []
+    for op in ops:
+        rows.append({
+            "operation_date":       op.get("operation_date", ""),
+            "operation_type_name":  op.get("operation_type_name", ""),
+            "posting_number":       op.get("posting_number", ""),
+            "accruals_for_sale":    op.get("accruals_for_sale", 0),
+            "sale_commission":      op.get("sale_commission", 0),
+            "amount":               op.get("amount", 0),
+        })
+    return pd.DataFrame(rows)
 
 
 df = load(date_from, date_to)
@@ -45,11 +71,7 @@ if "amount" in df.columns:
 # ── Таблица ────────────────────────────────────────────────────────────────────
 show_cols = [c for c in [
     "operation_date", "operation_type_name", "posting_number",
-    "accruals_for_sale", "sale_commission", "delivery_charge",
-    "return_delivery_charge", "amount"
+    "accruals_for_sale", "sale_commission", "amount"
 ] if c in df.columns]
 
-if show_cols:
-    st.dataframe(df[show_cols], use_container_width=True, hide_index=True)
-else:
-    st.dataframe(df, use_container_width=True, hide_index=True)
+st.dataframe(df[show_cols] if show_cols else df, use_container_width=True, hide_index=True)

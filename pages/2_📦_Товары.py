@@ -1,9 +1,10 @@
-"""P&L по товарам — Ozon Электроника."""
+"""Выручка по товарам — Ozon Электроника."""
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import calendar
 from datetime import date
-from src.ozon_api import get_top_products_by_revenue
+from src.ozon_api import fetch_transactions
 
 st.title("📦 Выручка по товарам")
 
@@ -20,14 +21,43 @@ with col3:
                         index=min(date.today().month - 1, 11),
                         format_func=lambda m: MONTHS_RU[m-1])
 
-import calendar
 date_from = date(year, m_from, 1)
 date_to   = min(date(year, m_to, calendar.monthrange(year, m_to)[1]), date.today())
 
 
+def _fetch_range(d_from: date, d_to: date) -> list:
+    """Fetch month-by-month (Ozon limit: 1 month per request)."""
+    all_ops = []
+    cur = d_from
+    while cur <= d_to:
+        y, m = cur.year, cur.month
+        month_end = min(date(y, m, calendar.monthrange(y, m)[1]), d_to)
+        all_ops.extend(fetch_transactions(cur, month_end))
+        cur = date(y + (m == 12), (m % 12) + 1, 1)
+    return all_ops
+
+
 @st.cache_data(ttl=3600, show_spinner="Загружаю данные по товарам…")
 def load(df: date, dt: date) -> pd.DataFrame:
-    return get_top_products_by_revenue(df, dt)
+    ops = _fetch_range(df, dt)
+    rows = []
+    for op in ops:
+        revenue = op.get("accruals_for_sale", 0)
+        if revenue == 0:
+            continue
+        commission = op.get("sale_commission", 0)
+        for item in op.get("items", []):
+            rows.append({
+                "sku":      item.get("sku"),
+                "товар":    item.get("name", ""),
+                "выручка":  revenue,
+                "комиссия": commission,
+                "нетто":    op.get("amount", 0),
+            })
+    if not rows:
+        return pd.DataFrame()
+    df2 = pd.DataFrame(rows)
+    return df2.groupby(["sku", "товар"])[["выручка", "комиссия", "нетто"]].sum().reset_index()
 
 
 df = load(date_from, date_to)
